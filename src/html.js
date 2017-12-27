@@ -59,7 +59,7 @@ export default function generateHTML(tag, params, ...children) {
 			let close = awaitAll(total, _ => {
 				closeElement(stream, closingTag, callback);
 			});
-			processChildren(stream, children,
+			processChildren(stream, children, 0,
 					{ nonBlocking, log, _idRegistry, tag }, close);
 		}
 	};
@@ -81,8 +81,8 @@ export function htmlEncode(str, attribute) {
 	return res;
 }
 
-function processChildren(stream, children, options, callback) {
-	for(let i = 0; i < children.length; i++) {
+function processChildren(stream, children, start, options, callback) {
+	for(let i = start; i < children.length; i++) {
 		let child = children[i];
 
 		if(!child.call) { // leaf node(s)
@@ -97,12 +97,11 @@ function processChildren(stream, children, options, callback) {
 			let res = callback.apply(null, arguments);
 			let next = i + 1;
 			if(next < children.length) {
-				let remainder = children.slice(next);
 				if(nonBlocking) {
 					process.nextTick(_ =>
-						processChildren(stream, remainder, options, callback));
+						processChildren(stream, children, next, options, callback));
 				} else {
-					processChildren(stream, remainder, options, callback);
+					processChildren(stream, children, next, options, callback);
 				}
 			}
 			return res;
