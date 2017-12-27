@@ -272,9 +272,17 @@ describe("HTML encoding", _ => {
 
 	it("should support large numbers of child elements", done => {
 		let range = Array.apply(null, Array(10000));
-		let el = h("ul", null, range.map((_, i) => {
-			return h("li", null, i);
-		}));
+		let el = h("ul", null, range.map((_, i) => h("li", null, i)));
+
+		render(el, html => {
+			assert(html.includes("<li>9999</li></ul>"));
+			done();
+		});
+	});
+
+	it("should support large numbers of deferred child elements", done => {
+		let range = Array.apply(null, Array(10000));
+		let el = h("ul", null, range.map((_, i) => cb => cb(h("li", null, i))));
 
 		render(el, html => {
 			assert(html.includes("<li>9999</li></ul>"));
