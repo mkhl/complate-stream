@@ -1,4 +1,4 @@
-import { simpleLog, awaitAll, flatCompact } from "./util";
+import { simpleLog, awaitAll, flatCompact, defer } from "./util";
 
 // cf. https://www.w3.org/TR/html5/syntax.html#void-elements
 const VOID_ELEMENTS = {}; // poor man's set
@@ -59,7 +59,8 @@ export default function generateHTML(tag, params, ...children) {
 			let close = awaitAll(total, _ => {
 				closeElement(stream, closingTag, callback);
 			});
-			processChildren(stream, children,
+			let process = nonBlocking ? processChildrenAsync : processChildrenSync;
+			process(stream, children,
 					{ nonBlocking, log, _idRegistry, tag }, close);
 		}
 	};
@@ -81,71 +82,66 @@ export function htmlEncode(str, attribute) {
 	return res;
 }
 
-function processChildren(stream, children, options, callback) {
-	for(let i = 0; i < children.length; i++) {
-		let child = children[i];
+function htmlContent(child) {
+	return child instanceof HTMLString ? child.value : htmlEncode(child.toString());
+}
 
+function processChildrenSync(stream, children, options, callback) {
+	let { nonBlocking, log, _idRegistry } = options;
+	let generatorOptions = { nonBlocking, log, _idRegistry };
+
+	children.forEach(child => {
 		if(!child.call) { // leaf node(s)
-			let content = child instanceof HTMLString ? // eslint-disable-next-line indent
-					child.value : htmlEncode(child.toString());
+			let content = htmlContent(child);
 			stream.write(content);
-			callback();
-			continue;
+			return callback();
 		}
 
-		let _callback = function() {
-			let res = callback.apply(null, arguments);
-			let next = i + 1;
-			if(next < children.length) {
-				let remainder = children.slice(next);
-				if(nonBlocking) {
-					process.nextTick(_ =>
-						processChildren(stream, remainder, options, callback));
-				} else {
-					processChildren(stream, remainder, options, callback);
-				}
-			}
-			return res;
-		};
-
-		let { nonBlocking, log, _idRegistry } = options;
-		let generatorOptions = { nonBlocking, log, _idRegistry };
 		if(child.length !== 1) { // element generator -- XXX: brittle heuristic (arity)
-			if(nonBlocking) {
-				child(stream, generatorOptions, _callback);
-				break;
-			} else {
-				child(stream, generatorOptions, callback);
-				continue;
-			}
+			return child(stream, generatorOptions, callback);
 		}
 
 		// deferred child element
-		let fn = element => element(stream, generatorOptions, _callback);
-
-		if(!nonBlocking) { // ensure deferred child element is synchronous
-			let invoked = false;
-
-			let _fn = fn;
-			fn = function() {
-				invoked = true;
-				return _fn.apply(null, arguments);
-			};
-
-			let _child = child;
-			child = function() {
-				let res = _child.apply(null, arguments);
-				if(!invoked) {
-					let msg = "invalid non-blocking operation detected";
-					throw new Error(`${msg}: \`${options.tag}\``);
-				}
-				return res;
-			};
-		}
+		let invoked = false;
+		let fn = element => {
+			invoked = true;
+			return element(stream, generatorOptions, callback);
+		};
 
 		child(fn);
-		break; // `remainder` processing continues recursively above
+		if(!invoked) { // ensure deferred child element is synchronous
+			let msg = "invalid non-blocking operation detected";
+			throw new Error(`${msg}: \`${options.tag}\``);
+		}
+	});
+}
+
+function processChildrenAsync(stream, children, options, callback, index = 0) {
+	let continuation = _ => {
+		let res = callback();
+		let next = index + 1;
+		if(next < children.length) {
+			defer(_ => processChildrenAsync(stream, children, options, callback, next));
+		}
+		return res;
+	};
+	let child = children[index];
+
+	if(!child.call) { // leaf node(s)
+		let content = htmlContent(child);
+		stream.write(content);
+		return continuation();
 	}
+
+	let { nonBlocking, log, _idRegistry } = options;
+	let generatorOptions = { nonBlocking, log, _idRegistry };
+
+	if(child.length !== 1) { // element generator -- XXX: brittle heuristic (arity)
+		return child(stream, generatorOptions, continuation);
+	}
+
+	// deferred child element
+	return child(element => element(stream, generatorOptions, continuation));
 }
 
 function closeElement(stream, tag, callback) {

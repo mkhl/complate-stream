@@ -16,6 +16,16 @@ export function awaitAll(total, callback) {
 	};
 }
 
+export function defer(fn) {
+	if(process && process.nextTick) {
+		return process.nextTick(fn);
+	}
+	if(setImmediate) {
+		return setImmediate(fn);
+	}
+	return setTimeout(fn, 0);
+}
+
 // flattens array while discarding blank values
 export function flatCompact(items) {
 	return items.reduce((memo, item) => {
