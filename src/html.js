@@ -59,8 +59,7 @@ export default function generateHTML(tag, params, ...children) {
 			let close = awaitAll(total, _ => {
 				closeElement(stream, closingTag, callback);
 			});
-			let mode = nonBlocking ? "async" : "sync";
-			processChildren[mode].apply(stream, children,
+			processChildren(nonBlocking).apply(stream, children,
 					{ nonBlocking, log, _idRegistry, tag }, close);
 		}
 	};
@@ -86,8 +85,9 @@ function htmlContent(child) {
 	return child instanceof HTMLString ? child.value : htmlEncode(child.toString());
 }
 
+let processChildren = (function() {
 function selector(child) {
-	if(!child.call) { // lead node(s)
+	if(!child.call) { // leaf node(s)
 		return "leaf";
 	}
 	if(child.length !== 1) { // element generator -- XXX: brittle heuristic (arity)
@@ -96,73 +96,69 @@ function selector(child) {
 	return "deferred"; // deferred child element
 }
 
-let processChildren = {
-	sync: {
-		apply(stream, children, options, callback) {
-			children.forEach(child => {
-				this[selector(child)](stream, child, options, callback);
-			});
-		},
+function restricted({ nonBlocking, log, _idRegistry }) {
+	return { nonBlocking, log, _idRegistry };
+}
 
-		leaf(stream, child, options, callback) {
-			stream.write(htmlContent(child));
-			callback();
-		},
-
-		generator(stream, child, options, callback) {
-			let { nonBlocking, log, _idRegistry } = options;
-			let generatorOptions = { nonBlocking, log, _idRegistry };
-			child(stream, generatorOptions, callback);
-		},
-
-		deferred(stream, child, options, callback) {
-			let { nonBlocking, log, _idRegistry } = options;
-			let generatorOptions = { nonBlocking, log, _idRegistry };
-			let invoked = false;
-			let fn = element => {
-				invoked = true;
-				return element(stream, generatorOptions, callback);
-			};
-			child(fn);
-			if(!invoked) { // ensure deferred child element is synchronous
-				let msg = "invalid non-blocking operation detected";
-				throw new Error(`${msg}: \`${options.tag}\``);
-			}
-		}
+let parent = {
+	leaf(stream, child, options, callback) {
+		stream.write(htmlContent(child));
+		callback();
 	},
 
-	async: {
-		apply(stream, children, options, callback, index = 0) {
-			let continuation = _ => {
-				let res = callback();
-				let next = index + 1;
-				if(next < children.length) {
-					defer(_ => this.apply(stream, children, options, callback, next));
-				}
-				return res;
-			};
-			let child = children[index];
-			this[selector(child)](stream, child, options, continuation);
-		},
+	generator(stream, child, options, callback) {
+		child(stream, restricted(options), callback);
+	}
+};
 
-		leaf(stream, child, options, callback) {
-			stream.write(htmlContent(child));
-			callback();
-		},
+let sync = {
+	apply(stream, children, options, callback) {
+		children.forEach(child => {
+			this[selector(child)](stream, child, options, callback);
+		});
+	},
 
-		generator(stream, child, options, callback) {
-			let { nonBlocking, log, _idRegistry } = options;
-			let generatorOptions = { nonBlocking, log, _idRegistry };
-			child(stream, generatorOptions, callback);
-		},
+	leaf: parent.leaf,
+	generator: parent.generator,
 
-		deferred(stream, child, options, callback) {
-			let { nonBlocking, log, _idRegistry } = options;
-			let generatorOptions = { nonBlocking, log, _idRegistry };
-			child(element => element(stream, generatorOptions, callback));
+	deferred(stream, child, options, callback) {
+		let invoked = false;
+		let fn = element => {
+			invoked = true;
+			return element(stream, restricted(options), callback);
+		};
+		child(fn);
+		if(!invoked) { // ensure deferred child element is synchronous
+			let msg = "invalid non-blocking operation detected";
+			throw new Error(`${msg}: \`${options.tag}\``);
 		}
 	}
 };
+
+let async = {
+	apply(stream, children, options, callback, index = 0) {
+		let continuation = _ => {
+			let res = callback();
+			let next = index + 1;
+			if(next < children.length) {
+				defer(_ => this.apply(stream, children, options, callback, next));
+			}
+			return res;
+		};
+		let child = children[index];
+		this[selector(child)](stream, child, options, continuation);
+	},
+
+	leaf: parent.leaf,
+	generator: parent.generator,
+
+	deferred(stream, child, options, callback) {
+		child(element => element(stream, restricted(options), callback));
+	}
+};
+
+return nonBlocking => nonBlocking ? async : sync;
+})();
 
 function closeElement(stream, tag, callback) {
 	if(tag !== null) { // void elements must not have closing tags
